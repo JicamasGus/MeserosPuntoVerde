@@ -10,14 +10,15 @@
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Roboto, sans-serif; }
         body { background: var(--fondo); color: var(--texto); padding: 10px; padding-bottom: 90px; }
         
-        /* PANTALLA LOGIN */
-        #pantalla-login { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--verde-oscuro); display: flex; justify-content: center; align-items: center; z-index: 9999; }
-        .login-box { background: white; padding: 30px; border-radius: 12px; width: 90%; max-width: 400px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
-        .login-box h2 { color: var(--verde-oscuro); margin-bottom: 20px; }
-        .login-box input { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 8px; font-size: 1rem; }
-        .login-box button { width: 100%; background: var(--verde-fuerte); color: white; border: none; padding: 12px; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; }
+        /* PANTALLA DE ESPERA / PERMISO DESDE COCINA */
+        #pantalla-espera { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(160deg, var(--verde-oscuro), var(--verde-fuerte)); display: flex; justify-content: center; align-items: center; z-index: 9999; padding: 20px; }
+        .espera-box { background: white; padding: 30px; border-radius: 16px; width: 100%; max-width: 420px; text-align: center; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        .espera-box h2 { color: var(--verde-oscuro); margin-bottom: 12px; font-size: 1.45rem; }
+        .espera-box p { color: #555; line-height: 1.45; margin-bottom: 12px; }
+        .estado-espera { display: inline-block; margin-top: 10px; padding: 8px 14px; border-radius: 999px; background: #fff8e1; color: #f57f17; font-weight: bold; font-size: 0.9rem; }
+        .estado-permiso-activo { background: #e8f5e9; color: var(--verde-fuerte); }
         
-        /* PANTALLA APP (Oculta por defecto) */
+        /* PANTALLA APP (Oculta por defecto hasta que cocina active permiso) */
         #pantalla-app { display: none; }
 
         /* HEADER Y APP */
@@ -31,6 +32,13 @@
         .btn-mesa.activa { background: var(--verde-fuerte); color: white; }
         
         .grid-menu { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+        .seccion-menu-titulo { grid-column: 1 / -1; color: var(--verde-oscuro); margin: 8px 0 2px; font-size: 1.05rem; border-left: 5px solid var(--verde-acento); padding-left: 8px; }
+        .item-menu.bebida { border-color: #90caf9; background: #f7fbff; }
+        .item-menu.bebida h3 { color: #1565c0; }
+        .item-menu.bebida small { color: #1976d2; }
+        .estado-item { display:inline-block; margin-top:4px; padding:2px 6px; border-radius:999px; font-size:0.72rem; font-weight:bold; }
+        .estado-enviado { background:#e8f5e9; color:var(--verde-fuerte); }
+        .estado-pendiente { background:#fff8e1; color:#f57f17; }
         .item-menu { background: white; padding: 15px 10px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); text-align: center; cursor: pointer; border: 1px solid #ddd; display: flex; flex-direction: column; justify-content: center; }
         .item-menu:active { transform: scale(0.95); background: #e8f5e9; }
         .item-menu h3 { font-size: 0.95rem; color: var(--verde-oscuro); margin-bottom: 5px; }
@@ -67,20 +75,19 @@
 </head>
 <body>
 
-    <div id="pantalla-login">
-        <div class="login-box">
-            <h2>🔒 Jícamas Gus<br><small style="font-size: 1rem; color:#666;">Acceso a Meseros</small></h2>
-            <input type="email" id="login-email" placeholder="Correo electrónico">
-            <input type="password" id="login-pass" placeholder="Contraseña">
-            <button id="btn-login" onclick="iniciarSesion()">Ingresar</button>
-            <p id="login-error" style="color:red; display:none; margin-top:10px; font-size:0.9rem;"></p>
+    <div id="pantalla-espera">
+        <div class="espera-box">
+            <h2>⏳ Comandera en espera</h2>
+            <p>La comandera está autenticándose y quedará bloqueada hasta que cocina active el permiso.</p>
+            <p>Cuando cocina la encienda, esta pantalla se quitará en automático.</p>
+            <span class="estado-espera" id="texto-estado-permiso">Esperando permiso de cocina...</span>
         </div>
     </div>
 
     <div id="pantalla-app">
         <div class="header">
             <h2>📱 Comandera</h2>
-            <button class="btn-logout" onclick="cerrarSesion()">Salir</button>
+            <span style="font-size:0.85rem; background:#e8f5e9; color:#1b5e20; padding:6px 10px; border-radius:999px; font-weight:bold;">Permiso activo</span>
         </div>
 
         <div class="mesas-container" id="selector-mesas"></div>
@@ -138,34 +145,56 @@
         const auth = firebase.auth();
         const db = firebase.firestore();
 
-        // --- SISTEMA DE LOGIN ---
-        auth.onAuthStateChanged(user => {
-            if (user) {
-                document.getElementById('pantalla-login').style.display = 'none';
-                document.getElementById('pantalla-app').style.display = 'block';
-            } else {
-                document.getElementById('pantalla-login').style.display = 'flex';
-                document.getElementById('pantalla-app').style.display = 'none';
-            }
-        });
+        // --- AUTENTICACIÓN AUTOMÁTICA + PERMISO DESDE COCINA ---
+        // IMPORTANTE: En Firebase Console debe estar activado Authentication > Sign-in method > Anonymous.
+        // Así la comandera no muestra login, pero Firestore la reconoce como usuario autenticado.
+        // Cocina podrá abrir/cerrar la comandera cambiando este documento en Firestore:
+        // Colección: configuracion | Documento: comandera | Campo: abierta = true/false
+        let permisoComanderaAbierto = false;
+        let unsubscribePermisoComandera = null;
 
-        function iniciarSesion() {
-            const email = document.getElementById('login-email').value;
-            const pass = document.getElementById('login-pass').value;
-            const btn = document.getElementById('btn-login');
-            const err = document.getElementById('login-error');
-            
-            btn.innerText = "Verificando...";
-            auth.signInWithEmailAndPassword(email, pass)
-                .then(() => { btn.innerText = "Ingresar"; err.style.display = "none"; })
-                .catch(error => { 
-                    btn.innerText = "Ingresar"; 
-                    err.innerText = "Credenciales incorrectas."; 
-                    err.style.display = "block"; 
-                });
+        function cambiarEstadoComandera(abierta, mensajeExtra = "") {
+            permisoComanderaAbierto = abierta;
+            const pantallaEspera = document.getElementById('pantalla-espera');
+            const pantallaApp = document.getElementById('pantalla-app');
+            const textoEstado = document.getElementById('texto-estado-permiso');
+
+            if (abierta) {
+                pantallaEspera.style.display = 'none';
+                pantallaApp.style.display = 'block';
+                textoEstado.innerText = 'Permiso activo';
+                textoEstado.classList.add('estado-permiso-activo');
+            } else {
+                pantallaEspera.style.display = 'flex';
+                pantallaApp.style.display = 'none';
+                textoEstado.innerText = mensajeExtra || 'Esperando permiso de cocina...';
+                textoEstado.classList.remove('estado-permiso-activo');
+            }
         }
 
-        function cerrarSesion() { auth.signOut(); }
+        function iniciarEscuchaPermisoComandera() {
+            if (unsubscribePermisoComandera) return;
+
+            unsubscribePermisoComandera = db.collection('configuracion').doc('comandera').onSnapshot(doc => {
+                const data = doc.exists ? doc.data() : {};
+                cambiarEstadoComandera(data.abierta === true);
+            }, error => {
+                console.error('Error leyendo permiso de comandera:', error);
+                cambiarEstadoComandera(false, 'No se pudo verificar el permiso. Revisa conexión o reglas de Firebase.');
+            });
+        }
+
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                iniciarEscuchaPermisoComandera();
+            } else {
+                cambiarEstadoComandera(false, 'Autenticando comandera...');
+                auth.signInAnonymously().catch(error => {
+                    console.error('Error iniciando sesión anónima:', error);
+                    cambiarEstadoComandera(false, 'No se pudo autenticar. Activa Anonymous en Firebase Authentication.');
+                });
+            }
+        });
 
         // --- 2. BASE DE DATOS DE PLATILLOS (INTACTA) ---
         const platillos = [
@@ -609,10 +638,35 @@
             }
         ];
 
+        // --- 2.1 BASE DE DATOS DE BEBIDAS ---
+        // Puedes editar nombres y precios aquí cuando lo necesites.
+        const bebidas = [
+            { id: "b1", nombre: "Agua Natural", precio: 20 },
+            { id: "b2", nombre: "Refresco", precio: 25 },
+            { id: "b3", nombre: "Agua Fresca Chica", precio: 25 },
+            { id: "b4", nombre: "Agua Fresca Grande", precio: 35 },
+            { id: "b5", nombre: "Botella de Agua", precio: 18 },
+            { id: "b6", nombre: "Preparado para Michelada", precio: 35 }
+        ];
+
         let mesaSeleccionada = "Mesa 1";
-        let pedidoActual = []; 
+        let pedidosPorMesa = JSON.parse(localStorage.getItem('pedidosPorMesaJicamasGus') || '{}');
+        let pedidoActual = obtenerPedidoMesa(mesaSeleccionada);
         let platilloActivoEnModal = null;
         let totalCuenta = 0;
+
+        // Contraseña para autorizar que un mesero quite productos del pedido.
+        // Cámbiala aquí por la clave real del gerente.
+        const PASSWORD_GERENTE = "4321";
+
+        function obtenerPedidoMesa(mesa) {
+            if (!pedidosPorMesa[mesa]) pedidosPorMesa[mesa] = [];
+            return pedidosPorMesa[mesa];
+        }
+
+        function guardarPedidosMesas() {
+            localStorage.setItem('pedidosPorMesaJicamasGus', JSON.stringify(pedidosPorMesa));
+        }
 
         // INICIALIZAR MESAS
         const contenedorMesas = document.getElementById('selector-mesas');
@@ -626,6 +680,12 @@
 
         // INICIALIZAR MENÚ
         const contenedorMenu = document.getElementById('menu-rapido');
+
+        const tituloPlatillos = document.createElement('h3');
+        tituloPlatillos.className = 'seccion-menu-titulo';
+        tituloPlatillos.innerText = '🍽️ Platillos';
+        contenedorMenu.appendChild(tituloPlatillos);
+
         platillos.forEach(p => {
             const div = document.createElement('div');
             div.className = 'item-menu';
@@ -634,11 +694,34 @@
             contenedorMenu.appendChild(div);
         });
 
+        const tituloBebidas = document.createElement('h3');
+        tituloBebidas.className = 'seccion-menu-titulo';
+        tituloBebidas.innerText = '🥤 Bebidas';
+        contenedorMenu.appendChild(tituloBebidas);
+
+        bebidas.forEach(b => {
+            const div = document.createElement('div');
+            div.className = 'item-menu bebida';
+            div.innerHTML = `<h3>${b.nombre}</h3><small>$${b.precio}</small>`;
+            div.onclick = () => agregarBebida(b.id);
+            contenedorMenu.appendChild(div);
+        });
+
+        function agregarBebida(id) {
+            const bebida = bebidas.find(b => b.id === id);
+            if (!bebida) return;
+            const stringTicket = `<b>${bebida.nombre}</b> <span style="color:#1565c0; font-weight:bold;">[Bebida]</span>`;
+            pedidoActual.push({ textoRenderizado: stringTicket, precio: bebida.precio, enviado: false });
+            guardarPedidosMesas();
+            actualizarVistaPedido();
+        }
+
         function seleccionarMesa(mesa, btnElement) {
             mesaSeleccionada = mesa;
+            pedidoActual = obtenerPedidoMesa(mesaSeleccionada);
             document.querySelectorAll('.btn-mesa').forEach(b => b.classList.remove('activa'));
             btnElement.classList.add('activa');
-            document.getElementById('titulo-pedido').innerHTML = `Pedido ${mesaSeleccionada} <span id="total-cuenta" style="color:var(--verde-acento);">$${totalCuenta.toFixed(2)}</span>`;
+            actualizarVistaPedido();
         }
 
         function cerrarModal() { document.getElementById('modal-personalizacion').style.display = 'none'; }
@@ -763,68 +846,132 @@
             if (baseQuitados.length > 0) stringTicket += `<br><small style="color:#d32f2f;">❌ Sin: ${baseQuitados.join(', ')}</small>`;
             if (extrasAgregados.length > 0) stringTicket += `<br><small style="color:#1976d2;">➕ Extras: ${extrasAgregados.join(', ')}</small>`;
 
-            pedidoActual.push({ textoRenderizado: stringTicket, precio: precioCalculado });
+            pedidoActual.push({ textoRenderizado: stringTicket, precio: precioCalculado, enviado: false });
+            guardarPedidosMesas();
             actualizarVistaPedido();
             cerrarModal();
         }
 
         function quitarDelPedido(index) {
+            const item = pedidoActual[index];
+            if (!item) return;
+
+            const clave = prompt("Autorización de gerente requerida para quitar este producto:\nIngresa la contraseña");
+            if (clave === null) return;
+
+            if (clave !== PASSWORD_GERENTE) {
+                alert("❌ Contraseña incorrecta. No se quitó el producto.");
+                return;
+            }
+
+            const confirmar = confirm("¿Quitar este producto del pedido?");
+            if (!confirmar) return;
+
             pedidoActual.splice(index, 1);
+            guardarPedidosMesas();
             actualizarVistaPedido();
+        }
+
+        // Esta función queda lista para usarse después desde cocina/cobro.
+        // Cuando cocina marque la cuenta como cobrada, puede limpiar la mesa llamando esta lógica.
+        function limpiarMesaCobrada(mesa) {
+            if (!pedidosPorMesa[mesa]) return;
+            pedidosPorMesa[mesa] = [];
+            if (mesaSeleccionada === mesa) {
+                pedidoActual = pedidosPorMesa[mesa];
+                actualizarVistaPedido();
+            }
+            guardarPedidosMesas();
         }
 
         function actualizarVistaPedido() {
             const divItems = document.getElementById('items-pedido');
+            const btnEnviar = document.getElementById('btn-enviar');
             divItems.innerHTML = '';
             totalCuenta = 0;
+            let totalPendiente = 0;
+            let cantidadPendiente = 0;
             
             if(pedidoActual.length === 0) {
                 divItems.innerHTML = '<p style="color:#999; font-size:0.9rem;">El pedido está vacío.</p>';
                 document.getElementById('titulo-pedido').innerHTML = `Pedido ${mesaSeleccionada} <span id="total-cuenta" style="color:var(--verde-acento);">$0.00</span>`;
+                btnEnviar.innerText = "Enviar a Cocina 👨‍🍳";
+                btnEnviar.disabled = false;
                 return;
             }
 
             pedidoActual.forEach((item, index) => {
                 totalCuenta += item.precio;
+                if (!item.enviado) {
+                    totalPendiente += item.precio;
+                    cantidadPendiente++;
+                }
+
+                const estado = item.enviado
+                    ? '<span class="estado-item estado-enviado">ENVIADO</span>'
+                    : '<span class="estado-item estado-pendiente">PENDIENTE</span>';
+
                 divItems.innerHTML += `
                     <div class="item-pedido">
-                        <div class="info-ticket">${item.textoRenderizado}</div>
+                        <div class="info-ticket">${item.textoRenderizado}<br>${estado}</div>
                         <div style="margin-right:15px; font-weight:bold; color:var(--verde-acento);">$${item.precio}</div>
                         <button class="btn-quitar" onclick="quitarDelPedido(${index})">✖</button>
                     </div>`;
             });
+
             document.getElementById('titulo-pedido').innerHTML = `Pedido ${mesaSeleccionada} <span id="total-cuenta" style="color:var(--verde-acento);">$${totalCuenta.toFixed(2)}</span>`;
+
+            if (cantidadPendiente > 0) {
+                btnEnviar.innerText = `Enviar ${cantidadPendiente} nuevo(s) a Cocina 👨‍🍳 - $${totalPendiente.toFixed(2)}`;
+                btnEnviar.disabled = false;
+            } else {
+                btnEnviar.innerText = "Sin productos nuevos por enviar";
+                btnEnviar.disabled = true;
+            }
         }
 
         async function enviarACocina() {
-            if(pedidoActual.length === 0) { alert("Selecciona al menos un platillo."); return; }
+            if(pedidoActual.length === 0) { alert("Selecciona al menos un platillo o bebida."); return; }
+
+            const pendientes = pedidoActual.filter(p => !p.enviado);
+            if (pendientes.length === 0) {
+                alert(`No hay productos nuevos para enviar en ${mesaSeleccionada}. Puedes agregar más y volver a enviar.`);
+                return;
+            }
             
             const btn = document.getElementById('btn-enviar');
             btn.innerText = "⏳ Enviando...";
             btn.disabled = true;
 
             try {
-                const itemsParaCocina = pedidoActual.map(p => p.textoRenderizado);
+                const itemsParaCocina = pendientes.map(p => p.textoRenderizado);
+                const totalPendiente = pendientes.reduce((sum, p) => sum + p.precio, 0);
+
                 await db.collection("comandas").add({
                     mesa: mesaSeleccionada,
                     items: itemsParaCocina,
                     hora: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
                     estado: "pendiente",
                     timestamp: Date.now(),
-                    total: totalCuenta
+                    total: totalPendiente,
+                    totalMesa: totalCuenta,
+                    esAdicional: pedidoActual.some(p => p.enviado)
                 });
                 
-                alert(`✅ Comanda enviada. Total: $${totalCuenta.toFixed(2)}`);
-                pedidoActual = [];
+                pedidoActual.forEach(item => { item.enviado = true; });
+                guardarPedidosMesas();
                 actualizarVistaPedido();
+                alert(`✅ Enviado a cocina. Total enviado ahora: $${totalPendiente.toFixed(2)}
+Total acumulado de ${mesaSeleccionada}: $${totalCuenta.toFixed(2)}`);
             } catch (error) {
                 console.error("Detalle del error:", error);
                 alert("❌ Falló el envío. Verifica tu conexión.");
             } finally {
-                btn.innerText = "Enviar a Cocina 👨‍🍳";
-                btn.disabled = false;
+                actualizarVistaPedido();
             }
         }
+
+        actualizarVistaPedido();
     </script>
 </body>
 </html>
