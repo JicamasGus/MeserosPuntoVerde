@@ -187,6 +187,7 @@
         auth.onAuthStateChanged(user => {
             if (user) {
                 iniciarEscuchaPermisoComandera();
+                escucharLimpiezaMesasCobradas();
             } else {
                 cambiarEstadoComandera(false, 'Autenticando comandera...');
                 auth.signInAnonymously().catch(error => {
@@ -668,6 +669,98 @@
             localStorage.setItem('pedidosPorMesaJicamasGus', JSON.stringify(pedidosPorMesa));
         }
 
+        function limpiarTextoTicket(html) {
+            const temp = document.createElement('div');
+            temp.innerHTML = html || '';
+            return temp.textContent || temp.innerText || '';
+        }
+
+        async function descontarProductoEnFirestore(item) {
+            if (!item || !item.enviado) return true;
+
+            try {
+                let docEncontrado = null;
+                let dataEncontrada = null;
+
+                // Si el producto ya trae el ID de la comanda, usamos ese documento directo.
+                if (item.comandaId) {
+                    const snapDirecto = await db.collection("comandas").doc(item.comandaId).get();
+                    if (snapDirecto.exists) {
+                        docEncontrado = snapDirecto.ref;
+                        dataEncontrada = snapDirecto.data() || {};
+                    }
+                }
+
+                // Respaldo para productos enviados antes de esta actualización: buscar por mesa y texto.
+                if (!docEncontrado) {
+                    const snap = await db.collection("comandas")
+                        .where("mesa", "==", mesaSeleccionada)
+                        .where("estado", "in", ["pendiente", "completado"])
+                        .get();
+
+                    snap.forEach(doc => {
+                        if (docEncontrado) return;
+                        const data = doc.data() || {};
+                        const items = Array.isArray(data.items) ? data.items : [];
+                        const detalles = Array.isArray(data.itemsDetalle) ? data.itemsDetalle : [];
+                        const existeEnItems = items.includes(item.textoRenderizado);
+                        const existeEnDetalles = detalles.some(d => d && d.texto === item.textoRenderizado);
+                        if (existeEnItems || existeEnDetalles) {
+                            docEncontrado = doc.ref;
+                            dataEncontrada = data;
+                        }
+                    });
+                }
+
+                if (!docEncontrado) {
+                    alert("No encontré este producto en cocina para descontarlo. No se quitó para evitar descuadrar la cuenta.");
+                    return false;
+                }
+
+                const itemsOriginales = Array.isArray(dataEncontrada.items) ? [...dataEncontrada.items] : [];
+                const detallesOriginales = Array.isArray(dataEncontrada.itemsDetalle) ? [...dataEncontrada.itemsDetalle] : [];
+
+                const idxItem = itemsOriginales.findIndex(t => t === item.textoRenderizado);
+                if (idxItem >= 0) itemsOriginales.splice(idxItem, 1);
+
+                let precioDescontar = parseFloat(item.precio) || 0;
+                const idxDetalle = detallesOriginales.findIndex(d => d && d.texto === item.textoRenderizado);
+                if (idxDetalle >= 0) {
+                    precioDescontar = parseFloat(detallesOriginales[idxDetalle].precio) || precioDescontar;
+                    detallesOriginales.splice(idxDetalle, 1);
+                }
+
+                const nuevoTotal = Math.max(0, (parseFloat(dataEncontrada.total) || 0) - precioDescontar);
+
+                await docEncontrado.update({
+                    items: itemsOriginales,
+                    itemsDetalle: detallesOriginales,
+                    total: nuevoTotal,
+                    totalMesa: firebase.firestore.FieldValue.increment(-precioDescontar),
+                    actualizado: Date.now()
+                });
+
+                return true;
+            } catch (error) {
+                console.error("Error descontando producto en cocina:", error);
+                alert("No se pudo descontar este producto en cocina. Revisa conexión o permisos.");
+                return false;
+            }
+        }
+
+        function escucharLimpiezaMesasCobradas() {
+            db.collection("mesas").onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    const data = change.doc.data() || {};
+                    if (data.limpiar === true && data.mesa) {
+                        limpiarMesaCobrada(data.mesa);
+                    }
+                });
+            }, error => {
+                console.error("Error escuchando mesas cobradas:", error);
+            });
+        }
+
         // INICIALIZAR MESAS
         const contenedorMesas = document.getElementById('selector-mesas');
         for(let i=1; i<=15; i++) {
@@ -711,7 +804,7 @@
             const bebida = bebidas.find(b => b.id === id);
             if (!bebida) return;
             const stringTicket = `<b>${bebida.nombre}</b> <span style="color:#1565c0; font-weight:bold;">[Bebida]</span>`;
-            pedidoActual.push({ textoRenderizado: stringTicket, precio: bebida.precio, enviado: false });
+            pedidoActual.push({ textoRenderizado: stringTicket, precio: bebida.precio, enviado: false, comandaId: null });
             guardarPedidosMesas();
             actualizarVistaPedido();
         }
@@ -846,13 +939,13 @@
             if (baseQuitados.length > 0) stringTicket += `<br><small style="color:#d32f2f;">❌ Sin: ${baseQuitados.join(', ')}</small>`;
             if (extrasAgregados.length > 0) stringTicket += `<br><small style="color:#1976d2;">➕ Extras: ${extrasAgregados.join(', ')}</small>`;
 
-            pedidoActual.push({ textoRenderizado: stringTicket, precio: precioCalculado, enviado: false });
+            pedidoActual.push({ textoRenderizado: stringTicket, precio: precioCalculado, enviado: false, comandaId: null });
             guardarPedidosMesas();
             actualizarVistaPedido();
             cerrarModal();
         }
 
-        function quitarDelPedido(index) {
+        async function quitarDelPedido(index) {
             const item = pedidoActual[index];
             if (!item) return;
 
@@ -866,6 +959,12 @@
 
             const confirmar = confirm("¿Quitar este producto del pedido?");
             if (!confirmar) return;
+
+            // Si ya fue enviado a cocina, también se descuenta en Firestore.
+            if (item.enviado) {
+                const descontado = await descontarProductoEnFirestore(item);
+                if (!descontado) return;
+            }
 
             pedidoActual.splice(index, 1);
             guardarPedidosMesas();
@@ -947,9 +1046,16 @@
                 const itemsParaCocina = pendientes.map(p => p.textoRenderizado);
                 const totalPendiente = pendientes.reduce((sum, p) => sum + p.precio, 0);
 
-                await db.collection("comandas").add({
+                const itemsDetalleParaCocina = pendientes.map(p => ({
+                    texto: p.textoRenderizado,
+                    textoPlano: limpiarTextoTicket(p.textoRenderizado),
+                    precio: parseFloat(p.precio) || 0
+                }));
+
+                const docRef = await db.collection("comandas").add({
                     mesa: mesaSeleccionada,
                     items: itemsParaCocina,
+                    itemsDetalle: itemsDetalleParaCocina,
                     hora: new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }),
                     estado: "pendiente",
                     timestamp: Date.now(),
@@ -958,7 +1064,10 @@
                     esAdicional: pedidoActual.some(p => p.enviado)
                 });
                 
-                pedidoActual.forEach(item => { item.enviado = true; });
+                pendientes.forEach(item => {
+                    item.enviado = true;
+                    item.comandaId = docRef.id;
+                });
                 guardarPedidosMesas();
                 actualizarVistaPedido();
                 alert(`✅ Enviado a cocina. Total enviado ahora: $${totalPendiente.toFixed(2)}
